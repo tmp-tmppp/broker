@@ -1,0 +1,79 @@
+# CI/CD of the broker. The steps live in the organization's shared workflow (RSO-ekipa10/.github,
+# .github/workflows/service-ci-cd.yml, ADR-051); this file only says when it runs and with which settings. The
+# broker has no code and no image of its own (the official NATS chart, a NetworkPolicy and a smoke test), so it
+# calls the shared workflow with build-image: false: no Node.js steps, no image build, push or digest, and the chart
+# gets no image values. The rules of the broker that the shared workflow does not know stay in chart-ci.yml.
+#   pull request   job "pipeline / test": workflow lint, Helm 4, chart lint and schema check (dev and prod values),
+#                  helm test hook; job "chart-rules / test": workflow lint, the NATS chart pinned and vendored,
+#                  strict chart lint, manifests against the Kubernetes schemas, rules of the broker
+#   push to main   the same checks, then the Helm deploy of the chart to prod, the smoke test (helm test) and
+#                  the rollback when it fails; the job "pipeline" starts only when "chart-rules" passed, because
+#                  the broker repository has no branch ruleset yet and nothing else would stop a deploy that
+#                  breaks a rule of the broker (for example no NetworkPolicy in the prod values)
+#   manual run     redeploy or roll back to the chart of an earlier commit of main (input "sha")
+name: ci-cd
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: Redeploy or roll back to the chart of this full commit SHA from main (empty = newest commit)
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  # Pull requests: a newer push cancels the older run. Main and manual runs from main share one
+  # group, and a newer run never cancels a running one (a killed "helm upgrade" leaves the
+  # release stuck). GitHub keeps only one waiting run per group, so a newer merge or manual run
+  # replaces the waiting one and the newest commit wins. A manual run from another branch gets
+  # its own group and deploys nothing (only main deploys).
+  group: ${{ github.workflow }}-${{ (github.event_name == 'pull_request' || github.ref != 'refs/heads/main') && github.ref || 'main' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  pipeline:
+    # The job id "pipeline" calling the job "test" gives the check name "pipeline / test",
+    # the name the branch ruleset of the services requires.
+    # The deploy is inside this job, so a push to main waits for "chart-rules" and runs only when it
+    # passed. A pull request runs both jobs and shows both results (the failure of one hides nothing of
+    # the other), and a manual run has no "chart-rules" (it only redeploys a commit already checked on main).
+    # !cancelled() lets the job run although a needed job failed or was skipped; the condition then decides.
+    needs: chart-rules
+    if: ${{ !cancelled() && (github.event_name != 'push' || needs.chart-rules.result == 'success') }}
+    # A called workflow gets at most these permissions; only its deploy job asks for id-token.
+    permissions:
+      contents: read
+      id-token: write # Azure login with OIDC in the deploy job
+    # TO DO AFTER org-github IS PUSHED (README, "Deploy"): the input build-image exists only in the
+    # commit of RSO-ekipa10/.github that adds it. Until that commit is on main there, GitHub refuses
+    # this file ("Invalid input, build-image is not defined in the referenced workflow") and no
+    # check runs; once it is on main, @main works as it is. Like the services (markets: "Temporary:
+    # @main until the first reviewed release tag"), pin this line to a commit SHA when the release
+    # tag exists, and make it that commit or a later one:
+    #   uses: RSO-ekipa10/.github/.github/workflows/service-ci-cd.yml@<40-character SHA> # <tag>
+    uses: tmp-tmppp/.github/.github/workflows/service-ci-cd.yml@main
+    with:
+      service: broker # also the Helm release name
+      build-image: false
+      azure-client-id: ${{ vars.AZURE_CLIENT_ID }}
+      sha: ${{ inputs.sha }}
+    secrets:
+      # Named secrets only (no "inherit"): the shared workflow gets nothing else. No Docker Hub token
+      # (nothing is pushed) and no app-env (the broker needs no Secret).
+      azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }} # secrets, so the public logs mask them
+      azure-subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+  chart-rules:
+    # The checks of the broker itself, in chart-ci.yml (the job id test inside it gives "chart-rules / test").
+    # A manual run only redeploys a commit that was already checked on main.
+    if: github.event_name != 'workflow_dispatch'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/chart-ci.yml

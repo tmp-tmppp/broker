@@ -1,0 +1,5 @@
+# Prod overrides. The sizes in values.yaml are the prod sizes (one small node, README "Storage and memory"); this file
+# switches the NetworkPolicy on. It only works with a network policy engine in the cluster and does nothing without one
+# (README, "Follow-ups").
+networkPolicy:
+  enabled: true

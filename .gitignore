@@ -1,0 +1,7 @@
+# Secrets and local files never go into the repository.
+.env
+.env.*
+!.env.example
+*.env
+# The vendored NATS chart (helm/charts/nats-*.tgz) and helm/Chart.lock ARE committed: the pipeline needs no network.
+reports/

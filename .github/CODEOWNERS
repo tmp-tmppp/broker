@@ -1,0 +1,4 @@
+# Pipeline, chart and local run definitions change what runs in prod (the broker carries every event): the other team member reviews them.
+/.github/ @radov02 @DominikkMaximus
+/helm/ @radov02 @DominikkMaximus
+/compose.yaml @radov02 @DominikkMaximus

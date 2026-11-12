@@ -1,0 +1,26 @@
+# Weekly update pull requests; minor and patch updates of one ecosystem come as one pull request,
+# major updates one by one. Each pull request runs the full checks.
+# Not covered, on purpose: the NATS chart (helm/Chart.yaml) and the images pinned in helm/values.yaml. A bump of the
+# chart must also replace the packaged chart in helm/charts/ and Chart.lock (a manual "helm dependency update"), so
+# the chart is updated by hand (README, "Update the NATS chart"); the images follow the chart.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions-minor-and-patch:
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: docker-compose
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      docker-minor-and-patch:
+        update-types:
+          - minor
+          - patch

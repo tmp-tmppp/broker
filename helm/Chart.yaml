@@ -1,0 +1,14 @@
+apiVersion: v2
+name: broker
+description: Message broker of Chance. NATS with JetStream (one server, file storage), the official NATS chart as a pinned dependency, a NetworkPolicy for the Chance services and a smoke test.
+type: application
+# Chart version: bump on every change to the chart. appVersion is the NATS server version of the dependency.
+version: 0.1.0
+appVersion: "2.15.2"
+dependencies:
+  # The official chart of nats-io (https://github.com/nats-io/k8s). One exact version, never a range; the packaged
+  # chart is committed in charts/ and Chart.lock holds its digest, so the pipeline needs no network for it
+  # (README, "Update the NATS chart"). Chart 2.15.2 runs NATS server 2.15.2, the version of the services' compose files.
+  - name: nats
+    version: 2.15.2
+    repository: https://nats-io.github.io/k8s/helm/charts

@@ -1,0 +1,104 @@
+# The checks of the broker itself, next to the organization's service pipeline (RSO-ekipa10/.github,
+# service-ci-cd.yml), which ci-cd.yml calls with build-image: false (no Node.js steps, no image) and which also
+# deploys the chart. The shared workflow does not know the broker, so this file keeps what only the broker needs:
+# workflow lint, the dependency check (the NATS chart is one exact version and vendored), strict chart lint, the
+# rendered manifests against the Kubernetes schemas of the cluster version and the rules of the broker. Nothing here
+# deploys; how the broker gets to the cluster is in README.md, "Deploy".
+#
+# Called by ci-cd.yml from a job with the id "chart-rules", so the check is named "chart-rules / test". The job id
+# test is part of that name: rename it only together with the branch ruleset.
+#
+# Every action is pinned to a full commit SHA (the same SHAs as the organization's workflow); Dependabot proposes
+# the action updates. The tool versions in "env" below are bumped by hand.
+name: chart-ci
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    # Explicit bash also turns on pipefail, so a failing command on the left of a pipe fails the step.
+    shell: bash
+
+env:
+  HELM_VERSION: v4.3.1 # Helm 4 (ADR-047), as in the organization's workflow
+  ACTIONLINT_IMAGE: docker.io/rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+  KUBECONFORM_IMAGE: ghcr.io/yannh/kubeconform:v0.8.0@sha256:faffaf43f95aa6425306e1ab8d6fcad72acb9049158f38e574c085ea1ec0f64e
+  KUBERNETES_VERSION: 1.35.0 # schema version of the kinds: the minor version of the cluster
+  NAMESPACE: prod
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Workflow lint (actionlint, includes shellcheck)
+        run: docker run --rm -v "$PWD":/repo -w /repo "$ACTIONLINT_IMAGE" -color
+
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Helm is version 4
+        run: |
+          helm version --short
+          [[ "$(helm version --short)" == v4.* ]] || { echo "::error::expected Helm 4 ($HELM_VERSION)"; exit 1; }
+
+      - name: The NATS chart is pinned to one exact version and vendored (no network needed)
+        run: |
+          # An exact version has digits and dots only: a range (^2.15, ~2.15, >=2, 2.x, *) fails here.
+          if grep -E '^[[:space:]]+version:[[:space:]]*"?[^0-9[:space:]]|^[[:space:]]+version:[[:space:]]*"?[0-9.]*[^0-9."[:space:]]' helm/Chart.yaml; then
+            echo "::error::helm/Chart.yaml: the dependency version must be one exact version, not a range"; exit 1
+          fi
+          # Status "ok" = the packaged chart in helm/charts/ matches Chart.yaml; "missing" or "wrong version" = run
+          # "helm dependency update helm" once and commit helm/charts/ and helm/Chart.lock (README, "Update the NATS chart").
+          helm dependency list helm | tee deps.txt
+          [[ "$(grep -c -E '[[:space:]]ok[[:space:]]*$' deps.txt)" == "1" ]] || { echo "::error::the dependency is not vendored in helm/charts/ or does not match Chart.yaml"; exit 1; }
+          # The lock file names the same version as Chart.yaml.
+          pinned=$(grep -A2 -E '^[[:space:]]*-[[:space:]]*name:[[:space:]]*nats' helm/Chart.yaml | grep -E 'version:' | head -n 1 | tr -d ' "' | cut -d: -f2)
+          locked=$(grep -A3 -E '^-[[:space:]]*name:[[:space:]]*nats' helm/Chart.lock | grep -E 'version:' | head -n 1 | tr -d ' "' | cut -d: -f2)
+          [[ -n "$pinned" && "$pinned" == "$locked" ]] || { echo "::error::Chart.yaml pins '$pinned' but Chart.lock has '$locked'"; exit 1; }
+
+      - name: Chart lint (default, dev and prod values)
+        run: |
+          helm lint helm --namespace "$NAMESPACE" --strict
+          helm lint helm --namespace "$NAMESPACE" --strict -f helm/values-dev.yaml
+          helm lint helm --namespace "$NAMESPACE" --strict -f helm/values-prod.yaml
+
+      - name: Manifests match the Kubernetes schemas (dev and prod values)
+        run: |
+          for values in dev prod; do
+            echo "::group::broker chart, $values values"
+            helm template broker helm --namespace "$NAMESPACE" -f "helm/values-$values.yaml" > "render-$values.yaml"
+            docker run --rm -i "$KUBECONFORM_IMAGE" -strict -summary -kubernetes-version "$KUBERNETES_VERSION" - < "render-$values.yaml"
+            echo "::endgroup::"
+          done
+
+      - name: Rules of the broker (what the services and the plan rely on)
+        run: |
+          fail() { echo "::error::$1"; exit 1; }
+          for values in dev prod; do
+            file="render-$values.yaml"
+            # The Service is called nats, so NATS_URL=nats://nats:4222 works for every service.
+            grep -q -E '^kind: Service$' "$file" || fail "$values: no Service rendered"
+            [[ "$(helm template broker helm --namespace "$NAMESPACE" -f "helm/values-$values.yaml" --show-only charts/nats/templates/service.yaml | grep -c -E '^  name: nats$')" == "1" ]] || fail "$values: the client Service is not called nats"
+            # ClusterIP only: never a load balancer, a node port or a host port.
+            if grep -n -E 'type: (LoadBalancer|NodePort)|nodePort:|hostPort:|hostNetwork:' "$file"; then fail "$values: the broker is exposed outside the cluster"; fi
+            # JetStream on file storage on a claim, in the rendered server configuration.
+            grep -q -E '"store_dir": "/data"' "$file" || fail "$values: JetStream file storage is not configured"
+            grep -q -E 'kind: StatefulSet' "$file" || fail "$values: no StatefulSet"
+            grep -q -E 'volumeClaimTemplates:' "$file" || fail "$values: the streams have no PersistentVolumeClaim"
+            # One server.
+            grep -q -E '^  replicas: 1$' "$file" || fail "$values: the StatefulSet is not one replica"
+            # Without a test hook "helm test" passes without testing anything after a deploy.
+            grep -Eq 'helm\.sh/hook"?:[[:space:]]*"?test' "$file" || fail "$values: the chart has no helm test hook (templates/tests/)"
+          done
+          # Prod admits the client port only to the Chance services.
+          grep -q -E '^kind: NetworkPolicy$' render-prod.yaml || fail "prod: no NetworkPolicy rendered"

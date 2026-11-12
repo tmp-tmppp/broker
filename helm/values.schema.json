@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "Values of the broker chart",
+  "description": "Refuses what would break the contract with the services (the Service name nats, JetStream on, ClusterIP only) and typos in the keys of this chart. The keys under nats are the official NATS chart's own and are checked only where this chart depends on them.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "nats": {
+      "type": "object",
+      "properties": {
+        "fullnameOverride": {
+          "const": "nats",
+          "description": "The Service name: every service connects to nats://nats:4222"
+        },
+        "config": {
+          "type": "object",
+          "properties": {
+            "nats": {
+              "type": "object",
+              "properties": {
+                "port": { "const": 4222, "description": "The port in the services' NATS_URL" }
+              }
+            },
+            "jetstream": {
+              "type": "object",
+              "properties": {
+                "enabled": { "const": true, "description": "The services create streams and durable consumers" },
+                "fileStore": {
+                  "type": "object",
+                  "properties": {
+                    "enabled": { "const": true },
+                    "pvc": {
+                      "type": "object",
+                      "properties": {
+                        "enabled": { "const": true, "description": "Without a claim the streams are lost at every restart" },
+                        "size": { "type": "string", "pattern": "^[0-9]+(Mi|Gi)$" }
+                      }
+                    },
+                    "maxSize": {
+                      "type": "string",
+                      "pattern": "^[0-9]+(Mi|Gi)$",
+                      "description": "Below the claim's size; the README explains the margin"
+                    }
+                  }
+                },
+                "memoryStore": {
+                  "type": "object",
+                  "properties": {
+                    "maxSize": { "type": "string", "pattern": "^[0-9]+(Mi|Gi)$" }
+                  }
+                }
+              }
+            },
+            "cluster": { "type": "object", "properties": { "enabled": { "const": false } } },
+            "leafnodes": { "type": "object", "properties": { "enabled": { "const": false } } },
+            "websocket": { "type": "object", "properties": { "enabled": { "const": false } } },
+            "mqtt": { "type": "object", "properties": { "enabled": { "const": false } } },
+            "gateway": { "type": "object", "properties": { "enabled": { "const": false } } }
+          }
+        },
+        "service": {
+          "type": "object",
+          "description": "ClusterIP only: the NATS chart's Service is a ClusterIP, and a merge or patch that changes it is refused",
+          "properties": {
+            "merge": {
+              "type": "object",
+              "properties": {
+                "spec": {
+                  "type": "object",
+                  "properties": {
+                    "type": { "const": "ClusterIP" }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "natsBox": {
+          "type": "object",
+          "properties": { "enabled": { "const": false, "description": "The smoke test starts its own nats-box Pod" } }
+        },
+        "reloader": { "type": "object" },
+        "promExporter": { "type": "object" },
+        "podDisruptionBudget": { "type": "object" },
+        "podTemplate": { "type": "object" },
+        "container": { "type": "object" }
+      }
+    },
+    "networkPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "clientApps": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" }
+        }
+      }
+    },
+    "smokeTest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "image": {
+          "type": "string",
+          "pattern": "@sha256:[0-9a-f]{64}$",
+          "description": "Pinned by digest"
+        }
+      },
+      "required": ["image"]
+    }
+  }
+}

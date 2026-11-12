@@ -1,0 +1,29 @@
+# The broker for local development: one NATS server with JetStream on a volume, the same version and flags as the
+# nats service in the compose files of the services (markets, trading, ...), published on this machine only.
+#
+#   docker compose up -d --wait     # nats://localhost:4222, monitoring at http://localhost:8222
+#   docker compose down -v          # stop and delete the stored streams
+#
+# The services' own compose files start the same server for their local runs. Start one or the other: both publish
+# the same two ports on 127.0.0.1. The cluster's settings (storage and memory limits, security context) are in
+# helm/values.yaml; they are not needed on a laptop.
+name: broker
+
+services:
+  nats:
+    image: nats:2.15.2-alpine
+    command: ["--jetstream", "--store_dir", "/data", "--http_port", "8222"]
+    ports:
+      - "127.0.0.1:4222:4222"
+      - "127.0.0.1:8222:8222"
+    volumes:
+      - nats-data:/data
+    healthcheck:
+      # The monitoring port answers 200 once the server and JetStream are up (the cluster's readiness probe uses it too).
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8222/healthz?js-server-only=true"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  nats-data:

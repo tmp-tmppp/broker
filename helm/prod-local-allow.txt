@@ -1,0 +1,3 @@
+# Prod values that hold a local address on purpose (the shared pipeline's check "Prod values hold no local address").
+# One "KEY.PATH REASON" per line. Each address is inside the Pod itself, never a peer service.
+nats.promExporter.monitorDomain the official NATS chart's exporter sidecar reads the NATS monitoring port of its own Pod

@@ -1,0 +1,73 @@
+# "helm test" after every deploy: the broker takes a message into a scratch JetStream stream on file storage, keeps it
+# and hands it to a durable pull consumer, which is what every service does with its own stream. The stream has a
+# unique name and is deleted at the end, also when a step fails. A failure fails the test and the pipeline rolls the
+# release back (ADR-048). The same script was run against the chart's NATS image with the chart's security settings
+# before it went in (README, "Checks").
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "broker.natsName" . }}-smoke-test
+  labels:
+    {{- include "broker.labels" . | nindent 4 }}
+    app.kubernetes.io/component: smoke-test
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    runAsGroup: 65534
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: smoke-test
+      image: {{ .Values.smokeTest.image }}
+      env:
+        - name: HOME
+          value: /tmp
+        - name: NATS_URL
+          value: nats://{{ include "broker.natsName" . }}:{{ .Values.nats.config.nats.port }}
+      command: ["sh", "-c"]
+      args:
+        - |-
+          set -eu
+          server="$NATS_URL"
+          stream="SMOKE_$(date +%s)_$$"
+          subject="smoke.$stream"
+          cleanup() {
+            nats --server "$server" stream rm "$stream" --force > /dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          echo "scratch stream: $stream"
+          nats --server "$server" stream add "$stream" --subjects "$subject" --storage file --retention limits --discard old --max-age 5m --replicas 1 --defaults > /dev/null
+          nats --server "$server" stream info "$stream" --json > /tmp/info.json
+          grep -q '"storage": "file"' /tmp/info.json
+          nats --server "$server" request "$subject" "smoke-payload" > /tmp/ack.txt
+          cat /tmp/ack.txt
+          grep -q "\"stream\":\"$stream\"" /tmp/ack.txt
+          nats --server "$server" consumer add "$stream" reader --pull --deliver all --ack explicit --replay instant --defaults > /dev/null
+          nats --server "$server" consumer next "$stream" reader --ack --count 1 --timeout 5s > /tmp/msg.txt
+          cat /tmp/msg.txt
+          grep -q "smoke-payload" /tmp/msg.txt
+          echo "published, stored on file and read back"
+      resources:
+        requests:
+          cpu: 10m
+          memory: 32Mi
+        limits:
+          memory: 64Mi
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+  volumes:
+    - name: tmp
+      emptyDir:
+        sizeLimit: 16Mi

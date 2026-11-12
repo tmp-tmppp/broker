@@ -1,0 +1,8 @@
+# Dev overrides (a local cluster): a smaller claim and store. No NetworkPolicy (a local cluster rarely has an engine).
+nats:
+  config:
+    jetstream:
+      fileStore:
+        pvc:
+          size: 1Gi
+        maxSize: 512Mi

@@ -1,0 +1,40 @@
+{{- if .Values.networkPolicy.enabled }}
+# Ingress to the NATS server, per port:
+#   client port (4222)       only the Chance services that connect, by the label app.kubernetes.io/name their charts
+#                            put on their Pods (networkPolicy.clientApps), and the smoke test Pod of this release;
+#   monitoring port (8222)   only the Pods of this namespace (health and statistics, a future metrics scraper).
+# Nothing else gets in: no other namespace, no gateway, no outside address. The server calls nothing, so there is no
+# egress rule (the policy covers Ingress only). The sources are Pods of this namespace; the services run in the same
+# namespace as the broker (one namespace per environment, plan section 9). Needs a network policy engine in the cluster.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "broker.natsName" . }}
+  labels:
+    {{- include "broker.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "broker.natsSelectorLabels" . | nindent 6 }}
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values:
+                  {{- toYaml .Values.networkPolicy.clientApps | nindent 18 }}
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: smoke-test
+      ports:
+        - port: {{ .Values.nats.config.nats.port }}
+          protocol: TCP
+    - from:
+        - podSelector: {}
+      ports:
+        - port: {{ .Values.nats.config.monitor.port }}
+          protocol: TCP
+{{- end }}

@@ -1,0 +1,142 @@
+# Defaults, safe for a local cluster. values-dev.yaml and values-prod.yaml override them. Unlike the service charts,
+# this chart builds no image of its own, so the pipeline passes no image values (README, "Deploy").
+#
+# The NATS server is the official NATS chart, vendored in charts/ (Chart.yaml, dependency "nats"): everything under the
+# key "nats" below is that chart's values (its full list: `helm show values charts/nats-2.15.2.tgz`). Only the
+# values that differ from its defaults are set here, each with the reason. The keys outside "nats" belong to this chart.
+
+nats:
+  # The Service must be called "nats" so that NATS_URL=nats://nats:4222, the value every service chart already
+  # carries, works whatever the release is called. The schema refuses any other name.
+  fullnameOverride: nats
+
+  config:
+    nats:
+      port: 4222
+
+    # JetStream with file storage on a PersistentVolumeClaim: every service creates its own stream (MARKETS, TRADING,
+    # TENANTS, PAYMENTS) with file storage and a maximum age of 30 days by default, and durable consumers keep their positions in the
+    # broker. The sizes are explained in README.md, "Storage and memory".
+    jetstream:
+      enabled: true
+      fileStore:
+        enabled: true
+        dir: /data
+        pvc:
+          enabled: true
+          size: 2Gi
+          # Unset = the cluster's default storage class (AKS: managed-csi, an Azure disk).
+        # The most the server may store. Half of the claim: when it is reached, a publish fails with a clear error and
+        # the services' outboxes keep the events, instead of the volume filling up and the server stopping.
+        maxSize: 1Gi
+      # No stream uses memory storage (all four are on file); a small cap keeps the server from reserving more.
+      memoryStore:
+        enabled: true
+        maxSize: 64Mi
+
+    # Health and statistics (/healthz, /varz, /jsz) on 8222. The probes use it. The Service carries it inside the
+    # cluster only (see service below), and the NetworkPolicy lets only the pods of this namespace in.
+    monitor:
+      enabled: true
+      port: 8222
+
+    # One server, so no cluster, no leaf nodes, no gateway, no WebSocket, no MQTT (the chart's defaults, stated so a
+    # reader sees that nothing else is open).
+    cluster:
+      enabled: false
+    leafnodes:
+      enabled: false
+    websocket:
+      enabled: false
+    mqtt:
+      enabled: false
+    gateway:
+      enabled: false
+
+  container:
+    # Same server version as the services' compose files (nats:2.15.2-alpine). The digest pins the exact image.
+    image:
+      repository: nats
+      tag: 2.15.2-alpine
+      digest: sha256:afae2fdbe2e326c65e1246cb83b9d05d319188734f3bd577ac8072daae78a10f
+    # One small node shared with the whole stack (plan INF-03, ADR-039): measured locally, the server process uses
+    # 5 MiB idle and 42 to 48 MiB with 80 000 stored messages (README, "Storage and memory"), so 96Mi (the request
+    # of the service charts) is generous and the 256Mi limit is a ceiling, not a reservation. The Go runtime is told
+    # a soft limit below the container limit, so it frees memory before the kernel kills the container.
+    resources:
+      requests:
+        cpu: 50m
+        memory: 96Mi
+      limits:
+        memory: 256Mi
+    env:
+      GOMEMLIMIT: 200MiB
+    # Restricted container: no privilege escalation, no capabilities, read-only root file system (the server writes
+    # only to the claim at /data, the pid file in an emptyDir and its config is mounted read-only).
+    merge:
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+
+  podTemplate:
+    # A changed configuration restarts the pod (see reloader below).
+    configChecksumAnnotation: true
+    # Runs as an unprivileged user (the image itself runs as root); fsGroup makes the claim writable for it.
+    merge:
+      spec:
+        automountServiceAccountToken: false
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          runAsGroup: 1000
+          fsGroup: 1000
+          seccompProfile:
+            type: RuntimeDefault
+
+  # No reloader sidecar: with one server a configuration change is a pod restart (checksum annotation above), and
+  # the sidecar would be a second container to run and to pin.
+  reloader:
+    enabled: false
+
+  # No metrics exporter: nothing in the cluster scrapes it yet (follow-up in README).
+  promExporter:
+    enabled: false
+
+  # A PodDisruptionBudget on one replica either protects nothing (maxUnavailable 1) or blocks every node drain and
+  # every cluster upgrade for good (minAvailable 1). Why this chart has none: README, "Why no PodDisruptionBudget".
+  podDisruptionBudget:
+    enabled: false
+
+  # No always-on nats-box Deployment; the smoke test and anything ad hoc start their own nats-box Pod.
+  natsBox:
+    enabled: false
+
+  # ClusterIP only, never a LoadBalancer or NodePort. The chart's Service is a ClusterIP by default; the schema pins
+  # that, so no value can expose the broker outside the cluster.
+  service:
+    ports:
+      nats:
+        enabled: true
+      monitor:
+        enabled: true
+
+# Admits the client port only to the Chance services and the monitoring port only to the pods of this namespace.
+# Needs a network policy engine in the cluster (plan section 9); without one the object does nothing.
+networkPolicy:
+  enabled: false
+  # The services that connect, by the label app.kubernetes.io/name their charts put on their Pods (the chart name).
+  clientApps:
+    - markets
+    - trading
+    - market-maker
+    - market-data
+    - tenants
+    - payments
+    - audit
+
+# Smoke test run by "helm test" after every deploy: publishes to and reads from a scratch JetStream stream on file
+# storage, then deletes it. The image is pinned by tag and digest.
+smokeTest:
+  image: docker.io/natsio/nats-box:0.20.0@sha256:d2f04223f40e016f77922a8115d34b0cd5fad2ec10b19b39316ae92d07f3d295
